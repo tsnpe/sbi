@@ -239,6 +239,9 @@ class PosteriorEstimator(NeuralInference, ABC):
             start_idx, exclude_invalid_x, warn_on_invalid=True
         )
 
+        print("Final theta shape in sbi.train: ", theta.shape)
+        print("Final x shape in sbi.train: ", x.shape)
+
         # Dataset is shared for training and validation loaders.
         dataset = data.TensorDataset(theta, x, prior_masks)
 
