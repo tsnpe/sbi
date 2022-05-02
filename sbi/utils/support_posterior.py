@@ -32,14 +32,24 @@ class PosteriorSupport:
         self._prior = prior
         self._posterior = posterior
         self._posterior_thr = None
-        print("allowed_false_negatives", allowed_false_negatives)
         self.tune_threshold(allowed_false_negatives, num_samples_to_estimate_support)
-        if not use_constrained_prior:
+        self.use_constrained_prior = use_constrained_prior
+        if not self.use_constrained_prior:
             self._proposal = self._prior
         else:
+            assert isinstance(self._prior, BoxUniform), "Prior must be BoxUniform"
             self._proposal = self.constrain_prior(
                 num_samples_to_estimate_support, constrained_prior_quanitle
             )
+
+        proposal_lower = self._proposal.support.base_constraint.lower_bound
+        proposal_upper = self._proposal.support.base_constraint.upper_bound
+        proposal_range = proposal_upper - proposal_lower
+        prior_lower = self._prior.support.base_constraint.lower_bound
+        prior_upper = self._prior.support.base_constraint.upper_bound
+        prior_range = prior_upper - prior_lower
+        prior_acceptance_rate = torch.prod(proposal_range / prior_range)
+        print("prior_acceptance_rate", prior_acceptance_rate)
 
     def constrain_prior(
         self, num_samples_to_estimate_support: int = 10_000, quant: float = 0.0
@@ -70,6 +80,8 @@ class PosteriorSupport:
         show_progress_bars: bool = False,
         sampling_batch_size: int = 10_000,
         return_acceptance_rate: bool = False,
+        method: str = "rejection",
+        sir_oversample: int = 256,
     ) -> Tensor:
         """
         Return samples from the `RestrictedPrior`.
@@ -87,64 +99,90 @@ class PosteriorSupport:
             Samples from the `RestrictedPrior`.
         """
 
-        num_samples = torch.Size(sample_shape).numel()
-        num_sampled_total, num_remaining = tensor(0), num_samples
-        accepted, acceptance_rate = [], float("Nan")
+        if method == "rejection":
+            num_samples = torch.Size(sample_shape).numel()
+            num_sampled_total, num_remaining = tensor(0), num_samples
+            accepted, acceptance_rate = [], float("Nan")
 
-        # Progress bar can be skipped.
-        pbar = tqdm(
-            disable=not show_progress_bars,
-            total=num_samples,
-            desc=f"Drawing {num_samples} posterior samples",
-        )
-
-        # To cover cases with few samples without leakage:
-        while num_remaining > 0:
-            # Sample and reject.
-            candidates = self._proposal.sample((sampling_batch_size,)).reshape(
-                sampling_batch_size, -1
+            # Progress bar can be skipped.
+            pbar = tqdm(
+                disable=not show_progress_bars,
+                total=num_samples,
+                desc=f"Drawing {num_samples} posterior samples",
             )
-            are_accepted_by_classifier = self.predict(candidates)
-            samples = candidates[are_accepted_by_classifier.bool()]
-            accepted.append(samples)
 
-            # Update.
-            num_sampled_total += tensor(sampling_batch_size)
-            num_remaining -= samples.shape[0]
-            pbar.update(samples.shape[0])
+            # To cover cases with few samples without leakage:
+            while num_remaining > 0:
+                # Sample and reject.
+                candidates = self._proposal.sample((sampling_batch_size,)).reshape(
+                    sampling_batch_size, -1
+                )
+                are_accepted_by_classifier = self.predict(candidates)
+                samples = candidates[are_accepted_by_classifier.bool()]
+                accepted.append(samples)
 
-            # To avoid endless sampling when leakage is high, we raise a warning if the
-            # acceptance rate is too low after the first 1_000 samples.
-            acceptance_rate = (num_samples - num_remaining) / num_sampled_total
-            print("Remaining:", num_remaining, end="\r")
+                # Update.
+                num_sampled_total += tensor(sampling_batch_size)
+                num_remaining -= samples.shape[0]
+                pbar.update(samples.shape[0])
 
-        pbar.close()
-        print(
-            f"The classifier rejected {(1.0 - acceptance_rate) * 100:.4f}% of all "
-            f"samples. You will get a speed-up of "
-            f"{(1.0 / acceptance_rate - 1.0) * 100:.1f}%.",
-        )
+                # To avoid endless sampling when leakage is high, we raise a warning if the
+                # acceptance rate is too low after the first 1_000 samples.
+                acceptance_rate = (num_samples - num_remaining) / num_sampled_total
+                print("Remaining:", num_remaining, end="\r")
 
-        # When in case of leakage a batch size was used there could be too many samples.
-        samples = torch.cat(accepted)[:num_samples]
-        assert (
-            samples.shape[0] == num_samples
-        ), "Number of accepted samples must match required samples."
+            pbar.close()
+            print(
+                f"The classifier rejected {(1.0 - acceptance_rate) * 100:.4f}% of all "
+                f"samples. You will get a speed-up of "
+                f"{(1.0 / acceptance_rate - 1.0) * 100:.1f}%.",
+            )
 
-        if return_acceptance_rate:
-            proposal_lower = self._proposal.support.base_constraint.lower_bound
-            proposal_upper = self._proposal.support.base_constraint.upper_bound
-            proposal_range = proposal_upper - proposal_lower
-            prior_lower = self._prior.support.base_constraint.lower_bound
-            prior_upper = self._prior.support.base_constraint.upper_bound
-            prior_range = prior_upper - prior_lower
-            prior_acceptance_rate = torch.prod(proposal_range / prior_range)
-            log_prior_acceptance = torch.log10(prior_acceptance_rate)
-            log_proposal_acceptance = torch.log10(acceptance_rate)
-            log_acceptance = log_prior_acceptance + log_proposal_acceptance
-            return samples, log_acceptance
+            # When in case of leakage a batch size was used there could be too many samples.
+            samples = torch.cat(accepted)[:num_samples]
+            assert (
+                samples.shape[0] == num_samples
+            ), "Number of accepted samples must match required samples."
+
+            if return_acceptance_rate:
+                if self.use_constrained_prior:
+                    proposal_lower = self._proposal.support.base_constraint.lower_bound
+                    proposal_upper = self._proposal.support.base_constraint.upper_bound
+                    proposal_range = proposal_upper - proposal_lower
+                    prior_lower = self._prior.support.base_constraint.lower_bound
+                    prior_upper = self._prior.support.base_constraint.upper_bound
+                    prior_range = prior_upper - prior_lower
+                    prior_acceptance_rate = torch.prod(proposal_range / prior_range)
+                    log_prior_acceptance = torch.log10(prior_acceptance_rate)
+                    log_proposal_acceptance = torch.log10(acceptance_rate)
+                    log_acceptance = log_prior_acceptance + log_proposal_acceptance
+                else:
+                    log_acceptance = torch.log10(acceptance_rate)
+                return samples, log_acceptance
+            else:
+                return samples
+
+        elif method == "sir":
+            num_samples = torch.Size(sample_shape).numel()
+            posterior_samples = self._posterior.sample((num_samples * sir_oversample,))
+            posterior_log_probs = self._posterior.log_prob(posterior_samples)
+            prior_log_probs = self._prior.log_prob(posterior_samples)
+            truncated_prior_log_probs = prior_log_probs
+            truncated_prior_log_probs[posterior_log_probs < self.thr] = -float("inf")
+            ratio = truncated_prior_log_probs - posterior_log_probs
+            reshaped_ratio = torch.reshape(ratio, (num_samples, sir_oversample))
+            cat_dist = torch.distributions.Categorical(logits=reshaped_ratio)
+            categorical_samples = cat_dist.sample((1,))[0, :]
+            reshaped_posterior_samples = torch.reshape(
+                posterior_samples, (num_samples, sir_oversample, -1)
+            )
+            selected_posterior_samples = reshaped_posterior_samples[
+                torch.arange(num_samples), categorical_samples
+            ]
+            assert selected_posterior_samples.shape[0] == num_samples
+            return selected_posterior_samples
         else:
-            return samples
+            raise ValueError
 
     def predict(self, theta: Tensor) -> Tensor:
         r"""
