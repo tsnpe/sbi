@@ -617,11 +617,11 @@ class RestrictedPrior:
             self.acceptance_rate = torch.as_tensor(acceptance_rate)
 
         pbar.close()
-        print(
-            f"The classifier rejected {(1.0 - acceptance_rate) * 100:.1f}% of all "
-            f"samples. You will get a speed-up of "
-            f"{(1.0 / acceptance_rate - 1.0) * 100:.1f}%.",
-        )
+        # print(
+        #     f"The classifier rejected {(1.0 - acceptance_rate) * 100:.1f}% of all "
+        #     f"samples. You will get a speed-up of "
+        #     f"{(1.0 / acceptance_rate - 1.0) * 100:.1f}%.",
+        # )
 
         # When in case of leakage a batch size was used there could be too many samples.
         samples = torch.cat(accepted)[:num_samples]

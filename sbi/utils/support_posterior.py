@@ -16,6 +16,8 @@ class PosteriorSupport:
         allowed_false_negatives: float = 0.0,
         use_constrained_prior: bool = False,
         constrained_prior_quanitle: bool = 0.0,
+        sampling_method: str = "rejection",
+        sir_oversample: int = 1024,
     ) -> None:
         r"""
         Initialize the simulation informed prior.
@@ -42,14 +44,8 @@ class PosteriorSupport:
                 num_samples_to_estimate_support, constrained_prior_quanitle
             )
 
-        proposal_lower = self._proposal.support.base_constraint.lower_bound
-        proposal_upper = self._proposal.support.base_constraint.upper_bound
-        proposal_range = proposal_upper - proposal_lower
-        prior_lower = self._prior.support.base_constraint.lower_bound
-        prior_upper = self._prior.support.base_constraint.upper_bound
-        prior_range = prior_upper - prior_lower
-        prior_acceptance_rate = torch.prod(proposal_range / prior_range)
-        print("prior_acceptance_rate", prior_acceptance_rate)
+        self.sampling_method = sampling_method
+        self.sir_oversample = sir_oversample
 
     def constrain_prior(
         self, num_samples_to_estimate_support: int = 10_000, quant: float = 0.0
@@ -80,8 +76,6 @@ class PosteriorSupport:
         show_progress_bars: bool = False,
         sampling_batch_size: int = 10_000,
         return_acceptance_rate: bool = False,
-        method: str = "rejection",
-        sir_oversample: int = 256,
     ) -> Tensor:
         """
         Return samples from the `RestrictedPrior`.
@@ -99,7 +93,7 @@ class PosteriorSupport:
             Samples from the `RestrictedPrior`.
         """
 
-        if method == "rejection":
+        if self.sampling_method == "rejection":
             num_samples = torch.Size(sample_shape).numel()
             num_sampled_total, num_remaining = tensor(0), num_samples
             accepted, acceptance_rate = [], float("Nan")
@@ -162,25 +156,63 @@ class PosteriorSupport:
             else:
                 return samples
 
-        elif method == "sir":
+        elif self.sampling_method == "sir":
+            print("Sampling with SIR")
             num_samples = torch.Size(sample_shape).numel()
-            posterior_samples = self._posterior.sample((num_samples * sir_oversample,))
-            posterior_log_probs = self._posterior.log_prob(posterior_samples)
-            prior_log_probs = self._prior.log_prob(posterior_samples)
-            truncated_prior_log_probs = prior_log_probs
-            truncated_prior_log_probs[posterior_log_probs < self.thr] = -float("inf")
-            ratio = truncated_prior_log_probs - posterior_log_probs
-            reshaped_ratio = torch.reshape(ratio, (num_samples, sir_oversample))
-            cat_dist = torch.distributions.Categorical(logits=reshaped_ratio)
-            categorical_samples = cat_dist.sample((1,))[0, :]
-            reshaped_posterior_samples = torch.reshape(
-                posterior_samples, (num_samples, sir_oversample, -1)
+            num_sampled_total, num_remaining = tensor(0), num_samples
+            accepted, acceptance_rate = [], float("Nan")
+
+            # To cover cases with few samples without leakage:
+            # Progress bar can be skipped.
+            pbar = tqdm(
+                disable=not show_progress_bars,
+                total=num_samples,
+                desc=f"Drawing {num_samples} posterior samples",
             )
-            selected_posterior_samples = reshaped_posterior_samples[
-                torch.arange(num_samples), categorical_samples
-            ]
-            assert selected_posterior_samples.shape[0] == num_samples
-            return selected_posterior_samples
+
+            all_samples = []
+            while num_remaining > 0:
+                batch_size = int(
+                    torch.ceil(
+                        torch.tensor(sampling_batch_size / self.sir_oversample)
+                    ).item()
+                )
+
+                posterior_samples = self._posterior.sample(
+                    (batch_size * self.sir_oversample,), show_progress_bars=False
+                )
+                posterior_log_probs = self._posterior.log_prob(posterior_samples)
+                prior_log_probs = self._prior.log_prob(posterior_samples)
+                truncated_prior_log_probs = prior_log_probs
+                truncated_prior_log_probs[posterior_log_probs < self.thr] = -float(
+                    "inf"
+                )
+                ratio = truncated_prior_log_probs - posterior_log_probs
+                reshaped_ratio = torch.reshape(ratio, (batch_size, self.sir_oversample))
+                cat_dist = torch.distributions.Categorical(logits=reshaped_ratio)
+                categorical_samples = cat_dist.sample((1,))[0, :]
+                reshaped_posterior_samples = torch.reshape(
+                    posterior_samples, (batch_size, self.sir_oversample, -1)
+                )
+                selected_posterior_samples = reshaped_posterior_samples[
+                    torch.arange(batch_size), categorical_samples
+                ]
+                num_remaining -= batch_size
+                all_samples.append(selected_posterior_samples)
+                pbar.update(batch_size)
+            pbar.close()
+            all_samples = torch.cat(all_samples)
+            all_samples = all_samples[:num_samples]
+            assert all_samples.shape[0] == num_samples
+            if return_acceptance_rate:
+                self.sampling_method = "rejection"
+                _, acceptance_rate = self.sample(
+                    sample_shape, return_acceptance_rate=True
+                )
+                self.sampling_method = "sir"
+                return all_samples, acceptance_rate
+            else:
+                return all_samples
         else:
             raise ValueError
 

@@ -31,6 +31,9 @@ from sbi.utils import (
     x_shape_from_simulation,
 )
 from sbi.utils.sbiutils import ImproperEmpirical, mask_sims_from_prior
+import logging
+
+log = logging.getLogger("sbi")
 
 
 class PosteriorEstimator(NeuralInference, ABC):
@@ -239,8 +242,8 @@ class PosteriorEstimator(NeuralInference, ABC):
             start_idx, exclude_invalid_x, warn_on_invalid=True
         )
 
-        print("Final theta shape in sbi.train: ", theta.shape)
-        print("Final x shape in sbi.train: ", x.shape)
+        log.info(f"Final theta shape in sbi.train: {theta.shape}")
+        log.info(f"Final x shape in sbi.train: {x.shape}")
 
         # Dataset is shared for training and validation loaders.
         dataset = data.TensorDataset(theta, x, prior_masks)
