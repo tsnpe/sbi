@@ -497,21 +497,21 @@ def within_support(distribution: Any, samples: Tensor) -> Tensor:
         Tensor of bools indicating whether each sample was within the support.
     """
     # Try to check using the support property, use log prob method otherwise.
-    try:
-        sample_check = distribution.support.check(samples)
+    # try:
+    #     sample_check = distribution.support.check(samples)
 
-        # Before torch v1.7.0, `support.check()` returned bools for every element.
-        # From v1.8.0 on, it directly considers all dimensions of a sample. E.g.,
-        # for a single sample in 3D, v1.7.0 would return [[True, True, True]] and
-        # v1.8.0 would return [True].
-        if sample_check.ndim > 1:
-            return torch.all(sample_check, dim=1)
-        else:
-            return sample_check
+    #     # Before torch v1.7.0, `support.check()` returned bools for every element.
+    #     # From v1.8.0 on, it directly considers all dimensions of a sample. E.g.,
+    #     # for a single sample in 3D, v1.7.0 would return [[True, True, True]] and
+    #     # v1.8.0 would return [True].
+    #     if sample_check.ndim > 1:
+    #         return torch.all(sample_check, dim=1)
+    #     else:
+    #         return sample_check
     # Falling back to log prob method of either the NeuralPosterior's net, or of a
     # custom wrapper distribution's.
-    except (NotImplementedError, AttributeError):
-        return torch.isfinite(distribution.log_prob(samples))
+    # except (NotImplementedError, AttributeError):
+    return torch.isfinite(distribution.log_prob(samples))
 
 
 def match_theta_and_x_batch_shapes(theta: Tensor, x: Tensor) -> Tuple[Tensor, Tensor]:
