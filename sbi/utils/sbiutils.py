@@ -578,6 +578,7 @@ def mcmc_transform(
         (or z-scored) to constrained (or non-z-scored) space.
     """
 
+    enable_transform = False
     if enable_transform:
         # Some distributions have a support argument but it raises a
         # NotImplementedError. We catch this case here.
