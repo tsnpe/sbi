@@ -76,6 +76,7 @@ class PosteriorSupport:
         show_progress_bars: bool = False,
         sampling_batch_size: int = 10_000,
         return_acceptance_rate: bool = False,
+        return_iw: bool = False,
     ) -> Tensor:
         """
         Return samples from the `RestrictedPrior`.
@@ -152,7 +153,10 @@ class PosteriorSupport:
                     log_acceptance = log_prior_acceptance + log_proposal_acceptance
                 else:
                     log_acceptance = torch.log10(acceptance_rate)
-                return samples, log_acceptance
+                if return_iw:
+                    return samples, log_acceptance, torch.randn((num_samples))
+                else:
+                    return samples, log_acceptance
             else:
                 return samples
 
@@ -171,6 +175,7 @@ class PosteriorSupport:
             )
 
             all_samples = []
+            all_importance_weights = []
             while num_remaining > 0:
                 batch_size = int(
                     torch.ceil(
@@ -189,6 +194,7 @@ class PosteriorSupport:
                 )
                 ratio = truncated_prior_log_probs - posterior_log_probs
                 reshaped_ratio = torch.reshape(ratio, (batch_size, self.sir_oversample))
+                all_importance_weights.append(ratio)
                 cat_dist = torch.distributions.Categorical(logits=reshaped_ratio)
                 categorical_samples = cat_dist.sample((1,))[0, :]
                 reshaped_posterior_samples = torch.reshape(
@@ -203,6 +209,7 @@ class PosteriorSupport:
             pbar.close()
             all_samples = torch.cat(all_samples)
             all_samples = all_samples[:num_samples]
+            all_importance_weights = torch.cat(all_importance_weights)
             assert all_samples.shape[0] == num_samples
             if return_acceptance_rate:
                 self.sampling_method = "rejection"
@@ -210,7 +217,10 @@ class PosteriorSupport:
                     sample_shape, return_acceptance_rate=True
                 )
                 self.sampling_method = "sir"
-                return all_samples, acceptance_rate
+                if return_iw:
+                    return all_samples, acceptance_rate, all_importance_weights
+                else:
+                    return all_samples, acceptance_rate
             else:
                 return all_samples
         else:
