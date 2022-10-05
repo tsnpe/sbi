@@ -63,12 +63,10 @@ class PosteriorSupport:
     ) -> None:
         samples = self._posterior.sample((num_samples_to_estimate_support,))
         log_probs = self._posterior.log_prob(samples)
-        print("lps", log_probs)
         sorted_log_probs, _ = torch.sort(log_probs)
         self.thr = sorted_log_probs[
             int(allowed_false_negatives * num_samples_to_estimate_support)
         ]
-        print("self.thr", self.thr)
 
     def sample(
         self,
@@ -154,14 +152,13 @@ class PosteriorSupport:
                 else:
                     log_acceptance = torch.log10(acceptance_rate)
                 if return_iw:
-                    return samples, log_acceptance, torch.randn((num_samples))
+                    return samples, log_acceptance, torch.randn((num_samples, self.sir_oversample))
                 else:
                     return samples, log_acceptance
             else:
                 return samples
 
         elif self.sampling_method == "sir":
-            print("Sampling with SIR")
             num_samples = torch.Size(sample_shape).numel()
             num_sampled_total, num_remaining = tensor(0), num_samples
             accepted, acceptance_rate = [], float("Nan")
@@ -169,7 +166,7 @@ class PosteriorSupport:
             # To cover cases with few samples without leakage:
             # Progress bar can be skipped.
             pbar = tqdm(
-                disable=not show_progress_bars,
+                disable=True,
                 total=num_samples,
                 desc=f"Drawing {num_samples} posterior samples",
             )
@@ -184,8 +181,7 @@ class PosteriorSupport:
                 )
 
                 posterior_samples = self._posterior.sample(
-                    (batch_size * self.sir_oversample,), show_progress_bars=False
-                )
+                    (batch_size * self.sir_oversample,))
                 posterior_log_probs = self._posterior.log_prob(posterior_samples)
                 prior_log_probs = self._prior.log_prob(posterior_samples)
                 truncated_prior_log_probs = prior_log_probs
@@ -194,7 +190,7 @@ class PosteriorSupport:
                 )
                 ratio = truncated_prior_log_probs - posterior_log_probs
                 reshaped_ratio = torch.reshape(ratio, (batch_size, self.sir_oversample))
-                all_importance_weights.append(ratio)
+                all_importance_weights.append(reshaped_ratio)
                 cat_dist = torch.distributions.Categorical(logits=reshaped_ratio)
                 categorical_samples = cat_dist.sample((1,))[0, :]
                 reshaped_posterior_samples = torch.reshape(
